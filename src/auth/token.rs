@@ -1,4 +1,4 @@
-use super::constants;
+use super::constants::{self, get_cookie_url};
 
 use chrono::Utc;
 use uuid::Uuid;
@@ -20,8 +20,8 @@ impl LoginError {
 }
 
 pub struct Token {
-	access_token: String,
-	code: String,
+	access_token: Option<String>,
+	code: Option<String>,
 
 	username: String,
 	password: String,
@@ -33,8 +33,8 @@ pub struct Token {
 impl Token {
 	pub fn new(username: &str, password: &str) -> Token {
 		return Token{
-			access_token: String::from(""),
-			code: String::from(""),
+			access_token: None,
+			code: None,
 
 			username: username.to_owned(),
 			password: password.to_owned(),
@@ -45,7 +45,10 @@ impl Token {
 	}
 
 	pub fn is_expired(self) -> bool {
-		return self.code == "" || (u64::try_from(Utc::now().timestamp()).unwrap() - self.issue_time) > self.expiry_time
+		return match self.code {
+			Some(val) => val == "" || (u64::try_from(Utc::now().timestamp()).unwrap() - self.issue_time) > self.expiry_time,
+			None => true,
+		}
 	}
 
 	pub async fn refresh(self) -> Result<(), LoginError> {
@@ -56,20 +59,30 @@ impl Token {
 		Ok(())
 	}
 
-	async fn get_auth_data(self) -> Result<&str, LoginError> {
+	async fn get_cookies(self) -> Result<String, LoginError> {
 		let state = Uuid::new_v4();
 		let nonce = Uuid::new_v4();
 
 		let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
-
 		let cookie_url = constants::get_cookie_url(state.to_string().as_str(), nonce.to_string().as_str());
 
-		let cookie: &str = match client.get(cookie_url).send().await {
-			Err(err) => return Err(LoginError::new("Can't connect?", "", err.status().unwrap_or_default().as_u16())),
-			Ok(res) => res.headers()["Cookie"].to_str().unwrap()
+		return match client.get(cookie_url).send().await {
+			Err(err) => Err(LoginError::new("Can't connect?", "", err.status().unwrap_or_default().as_u16())),
+			Ok(res) => {
+				let headers = res.headers();
+				let status = res.status();
+				match headers.get("Cookie") {
+						Some(v) => Ok(String::from(v.to_str().unwrap())),
+						None => Err(LoginError::new("No cookies header", res.text().await.unwrap_or_default().as_str(), status.as_u16()))
+				}
+			}
 		};
+	} 
 
-		Ok("")
+	async fn get_auth_data(self) -> Result<String, LoginError> {
+		let var = self.get_cookies().await?;
+
+		Ok(var)
 	}
 }
 
